@@ -8,9 +8,9 @@ import json
 import os
 import difflib
 
+import config
+
 # --- НАЛАШТУВАННЯ ---
-TOKEN = '8350648535:AAFFNCr61u3_WIi8_o-BrTZ_nzNZ7Ihj-k0'
-bot = telebot.TeleBot(TOKEN)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 JSON_FILE = os.path.join(BASE_DIR, 'tickers.json')
@@ -18,6 +18,7 @@ JSON_FILE = os.path.join(BASE_DIR, 'tickers.json')
 if os.path.exists('/usr/bin/tesseract'):
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 
+bot = telebot.TeleBot(config.TOKEN)
 
 # --- РОБОТА З БАЗОЮ ---
 def load_tickers():
