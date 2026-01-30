@@ -1,59 +1,65 @@
-import telebot
-from telebot import types
-import pytesseract
-from PIL import Image, ImageOps
-import io
+import asyncio
+import sys
+import os
 import re
 import json
-import os
+import io
 import difflib
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-import config
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from PIL import Image, ImageOps
+import pytesseract
+
+# Додаємо верхню директорію в шлях для імпорту config
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+try:
+    import config
+except ImportError:
+    exit("❌ Помилка: Не знайдено файл config.py рівнем вище.")
 
 # --- НАЛАШТУВАННЯ ---
+BASE_DIR = Path(__file__).resolve().parent
+JSON_FILE = BASE_DIR / 'tickers.json'
+bot = Bot(token=config.TG_TOKEN)
+dp = Dispatcher()
+executor = ThreadPoolExecutor()  # Для неблокуючого OCR
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-JSON_FILE = os.path.join(BASE_DIR, 'tickers.json')
 
-if os.path.exists('/usr/bin/tesseract'):
-    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-
-bot = telebot.TeleBot(config.TOKEN)
-
-# --- РОБОТА З БАЗОЮ ---
 def load_tickers():
-    if os.path.exists(JSON_FILE):
+    if JSON_FILE.exists():
         with open(JSON_FILE, 'r', encoding='utf-8') as f:
             return sorted(json.load(f))
     return ["BTC", "ETH", "SOL"]
 
 
 def save_ticker(ticker):
-    ticker = ticker.upper().strip()
-    tickers = load_tickers()
-    if ticker not in tickers:
-        tickers.append(ticker)
-        with open(JSON_FILE, 'w', encoding='utf-8') as f:
-            json.dump(tickers, f, indent=4)
-    return sorted(tickers)
+    tickers = set(load_tickers())
+    tickers.add(ticker.upper().strip())
+    with open(JSON_FILE, 'w', encoding='utf-8') as f:
+        json.dump(sorted(list(tickers)), f, indent=4)
 
 
-# --- ПАРСИНГ ---
-def parse_crypto_data(image):
-    width, height = image.size
-    # Зона монети
-    coin_zone = image.crop((width * 0.02, height * 0.01, width // 1.5, height // 10))
+# --- АСИНХРОННИЙ ПАРСИНГ ---
+def sync_parse_image(image_bytes):
+    img = Image.open(io.BytesIO(image_bytes))
+    width, height = img.size
+
+    # OCR монети
+    coin_zone = img.crop((width * 0.02, height * 0.01, width // 1.5, height // 10))
     coin_zone = ImageOps.invert(coin_zone.convert('L')).point(lambda x: 0 if x < 140 else 255, '1')
     raw_coin = pytesseract.image_to_string(coin_zone, lang='eng', config='--psm 7').strip()
     raw_coin = re.sub(r'[^A-Z0-9]', '', raw_coin.upper()).replace("USDT", "")
 
-    # Напрямок (Short/Long)
-    check_area = image.crop((width // 2, 0, width, height // 4))
+    # Колір (Long/Short)
+    check_area = img.crop((width // 2, 0, width, height // 4))
     r, g, b = ImageOps.posterize(check_area.resize((1, 1)), 1).getpixel((0, 0))
     direction = "🔴 SHORT" if r > g else "🟢 LONG"
 
-    # ROI та ціни
-    full_text = pytesseract.image_to_string(image, lang='eng')
+    full_text = pytesseract.image_to_string(img, lang='eng')
     roi = re.search(r'([+-]?\d+[\.,]\d+\s*%)', full_text)
     prices = re.findall(r'\d+[\.,]\d{4,}', full_text)
 
@@ -66,75 +72,46 @@ def parse_crypto_data(image):
     }
 
 
-user_sessions = {}
+# --- ОБРОБНИКИ ---
+@dp.message(F.photo)
+async def handle_photo(message: types.Message):
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    content = await bot.download_file(file.file_path)
+
+    # Запускаємо важкий OCR в окремому потоці
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(executor, sync_parse_image, content.read())
+
+    tickers = load_tickers()
+    best_matches = difflib.get_close_matches(data['raw_coin'], tickers, n=1, cutoff=0.4)
+    suggestion = best_matches[0] if best_matches else None
+
+    # Клавіатура
+    builder = InlineKeyboardBuilder()
+    for t in tickers[:15]:  # Обмежуємо кількість кнопок для швидкості
+        builder.button(text=t, callback_data=f"sel_{t}")
+    builder.button(text="➕ Додати нову", callback_data="add_new")
+    builder.adjust(3)
+
+    text = (f"🔍 OCR: `{data['raw_coin']}`\n"
+            f"{f'🤔 Схоже на: *{suggestion}*' if suggestion else ''}\n"
+            f"Оберіть монету:")
+
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    try:
-        chat_id = message.chat.id
-        file_info = bot.get_file(message.photo[-1].file_id)
-        img = Image.open(io.BytesIO(bot.download_file(file_info.file_path)))
-
-        data = parse_crypto_data(img)
-        tickers = load_tickers()
-
-        # Шукаємо найбільш схожу монету в нашому списку
-        best_matches = difflib.get_close_matches(data['raw_coin'], tickers, n=1, cutoff=0.4)
-        suggestion = best_matches[0] if best_matches else None
-
-        user_sessions[chat_id] = data
-
-        # Створюємо клавіатуру зі списком усіх монет
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        btns = [types.InlineKeyboardButton(t, callback_data=f"sel_{t}") for t in tickers]
-        markup.add(*btns)
-        markup.add(types.InlineKeyboardButton("➕ Додати нову монету", callback_data="add_new"))
-
-        text = f"🔍 OCR розпізнав: `{data['raw_coin']}`\n"
-        if suggestion:
-            text += f"🤔 Схоже на: *{suggestion}*?\n"
-        text += "\nОберіть монету зі списку нижче:"
-
-        bot.reply_to(message, text, reply_markup=markup, parse_mode='Markdown')
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Помилка: {e}")
+@dp.callback_query(F.data.startswith("sel_"))
+async def select_ticker(callback: types.CallbackQuery):
+    ticker = callback.data.split("_")[1]
+    # Тут можна додати логіку виводу фінального результату
+    await callback.message.edit_text(f"✅ Обрано: **{ticker}**", parse_mode="Markdown")
 
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_query(call):
-    chat_id = call.message.chat.id
-    if call.data.startswith("sel_"):
-        ticker = call.data.replace("sel_", "")
-        if chat_id in user_sessions:
-            send_result(chat_id, ticker, user_sessions[chat_id])
-        bot.delete_message(chat_id, call.message.message_id)
-
-    elif call.data == "add_new":
-        msg = bot.send_message(chat_id, "Введіть назву нової монети (напр. PEPE):")
-        bot.register_next_step_handler(msg, process_new_ticker)
-        bot.delete_message(chat_id, call.message.message_id)
-
-
-def process_new_ticker(message):
-    ticker = message.text.upper().strip()
-    save_ticker(ticker)
-    chat_id = message.chat.id
-    if chat_id in user_sessions:
-        send_result(chat_id, ticker, user_sessions[chat_id])
-    else:
-        bot.send_message(chat_id, f"✅ Монета {ticker} додана в базу!")
-
-
-def send_result(chat_id, ticker, data):
-    msg = (f"🪙 Монета: *{ticker}*\n"
-           f"📊 Напрямок: *{data['direction']}*\n"
-           f"💰 ROI: `{data['roi']}`\n"
-           f"📥 Вхід: `{data['entry']}`\n"
-           f"📈 Ціна: `{data['mark']}`")
-    bot.send_message(chat_id, msg, parse_mode='Markdown')
+async def main():
+    print("🚀 Бот запущений асинхронно...")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    print("Бот працює...")
-    bot.polling(none_stop=True)
+    asyncio.run(main())
