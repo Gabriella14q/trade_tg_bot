@@ -30,7 +30,6 @@ async def place_test_order_async():
     recv_window = "5000"
     payload_str = json.dumps(payload)
 
-    # Підпис
     param_str = timestamp + config.API_KEY + recv_window + payload_str
     signature = hmac.new(
         config.API_SECRET.encode("utf-8"),
@@ -43,21 +42,27 @@ async def place_test_order_async():
         'X-BAPI-SIGN': signature,
         'X-BAPI-TIMESTAMP': timestamp,
         'X-BAPI-RECV-WINDOW': recv_window,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept-Encoding': 'identity'  # Явно просимо не стискати
     }
 
-    # Використовуємо aiohttp для швидкості
-    async with aiohttp.ClientSession(trust_env=True) as session:
+    # ВАЖЛИВО: auto_decompress=False вимикає спроби aiohttp розпакувати Brotli
+    async with aiohttp.ClientSession(auto_decompress=False, trust_env=True) as session:
         try:
             async with session.post(url, headers=headers, data=payload_str, timeout=10) as resp:
-                status = resp.status
-                text = await resp.text()
+                # Читаємо як байтовий рядок
+                raw_body = await resp.read()
 
-                if status == 200:
-                    return True, await resp.json()
-                else:
-                    print(f"Помилка Bybit: {status} - {text}")
-                    return False, text
+                # Декодуємо вручну в текст
+                try:
+                    text_res = raw_body.decode('utf-8')
+                    data = json.loads(text_res)
+                    return True, data
+                except Exception as parse_err:
+                    # Якщо це все одно стиснутий бінарний мотлох
+                    print(f"Raw body start: {raw_body[:20]}")
+                    return False, f"Decode error: {parse_err}"
+
         except Exception as e:
             print(f"Мережева помилка: {e}")
             return False, str(e)
