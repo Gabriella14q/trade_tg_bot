@@ -56,6 +56,8 @@ async def place_test_order_async():
                 # Декодуємо вручну в текст
                 try:
                     text_res = raw_body.decode('utf-8')
+                    print(f"DEBUG: Status: {resp.status}")
+                    print(f"DEBUG: Raw Text: '{text_res}'")  # Якщо тут '', значить воркер не отримав відповіді
                     data = json.loads(text_res)
                     return True, data
                 except Exception as parse_err:
