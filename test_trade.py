@@ -18,14 +18,9 @@ spec.loader.exec_module(config)
 
 
 def place_test_order():
-    # Твоє посилання на воркер (БЕЗ https://)
-    # Ми будемо стукати прямо на нього
+    # ПОВНЕ ПОСИЛАННЯ (перевір чи немає зайвих пробілів)
     url = "https://bybit-proxy.itconsultaustria.workers.dev/v5/order/create"
 
-    api_key = config.API_KEY
-    api_secret = config.API_SECRET
-
-    # Дані ордера
     payload = {
         "category": "linear",
         "symbol": "BTCUSDT",
@@ -35,16 +30,19 @@ def place_test_order():
         "timeInForce": "GTC"
     }
 
-    # Створення підпису Bybit (це те, що pybit робить всередині)
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
     payload_str = json.dumps(payload)
-    param_str = timestamp + api_key + recv_window + payload_str
-    hash = hmac.new(bytes(api_secret, "utf-8"), param_str.encode("utf-8"), hashlib.sha256)
-    signature = hash.hexdigest()
+    param_str = timestamp + config.API_KEY + recv_window + payload_str
+
+    signature = hmac.new(
+        bytes(config.API_SECRET, "utf-8"),
+        param_str.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
 
     headers = {
-        'X-BAPI-API-KEY': api_key,
+        'X-BAPI-API-KEY': config.API_KEY,
         'X-BAPI-SIGN': signature,
         'X-BAPI-TIMESTAMP': timestamp,
         'X-BAPI-RECV-WINDOW': recv_window,
@@ -52,18 +50,24 @@ def place_test_order():
     }
 
     try:
-        response = requests.post(url, headers=headers, data=payload_str)
-        print(f"Status Code: {response.status_code}")  # Відладка
+        session = requests.Session()
+        session.trust_env = False  # Ігноруємо системні проксі PythonAnywhere
+
+        response = session.post(url, headers=headers, data=payload_str, timeout=10)
+
+        print(f"DEBUG: Status {response.status_code}")
+
+        if not response.text:
+            return False, "Cloudflare returned an empty response (0 bytes)."
 
         try:
             result = response.json()
             if result.get('retCode') == 0:
                 return True, result
             else:
-                return False, f"Bybit Error: {result.get('retMsg')} (Code: {result.get('retCode')})"
+                return False, f"Bybit: {result.get('retMsg')} ({result.get('retCode')})"
         except:
-            # Якщо це не JSON, виводимо текст відповіді
-            return False, f"Cloudflare returned non-JSON: {response.text[:200]}"
+            return False, f"Not a JSON. Status: {response.status_code}. Text: {response.text[:100]}"
 
     except Exception as e:
-        return False, f"Request Error: {str(e)}"
+        return False, f"Connection Error: {str(e)}"
