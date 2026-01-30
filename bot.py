@@ -7,6 +7,7 @@ import importlib.util
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from bybit_trade import place_bybit_order
+from test_trade import place_test_order
 
 # Налаштування для aiogram 3
 from pydantic import ConfigDict
@@ -89,6 +90,22 @@ def process_ocr(image_bytes):
 
 
 # --- ОБРОБНИКИ ---
+
+
+@dp.message(F.text == "тест")  # Напиши боту слово "тест"
+async def debug_order_trigger(message: types.Message):
+    await message.answer("🛠 Запускаю тестовий ордер на Demo через Cloudflare...")
+
+    # Запускаємо в окремому потоці, щоб не фрізити бота
+    success, result = await asyncio.get_event_loop().run_in_executor(
+        thread_pool, place_test_order
+    )
+
+    if success:
+        order_id = result.get('result', {}).get('orderId', 'Н/Д')
+        await message.answer(f"✅ УСПІХ!\nID Ордера: `{order_id}`\nПеревір Demo-акаунт.")
+    else:
+        await message.answer(f"❌ ПОМИЛКА:\n`{result}`")
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message, state: FSMContext):
