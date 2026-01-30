@@ -52,13 +52,18 @@ def place_test_order():
     }
 
     try:
-        # Шлемо запит прямо на Cloudflare
         response = requests.post(url, headers=headers, data=payload_str)
-        result = response.json()
+        print(f"Status Code: {response.status_code}")  # Відладка
 
-        if result.get('retCode') == 0:
-            return True, result
-        else:
-            return False, f"Bybit Error: {result.get('retMsg')} (Code: {result.get('retCode')})"
+        try:
+            result = response.json()
+            if result.get('retCode') == 0:
+                return True, result
+            else:
+                return False, f"Bybit Error: {result.get('retMsg')} (Code: {result.get('retCode')})"
+        except:
+            # Якщо це не JSON, виводимо текст відповіді
+            return False, f"Cloudflare returned non-JSON: {response.text[:200]}"
+
     except Exception as e:
         return False, f"Request Error: {str(e)}"
