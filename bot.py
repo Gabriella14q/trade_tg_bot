@@ -1,121 +1,223 @@
 import asyncio
-import sys
 import io
 import re
 import json
 import difflib
+import importlib.util
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+# Налаштування для aiogram 3
+from pydantic import ConfigDict
+
+ConfigDict.protected_namespaces = ()
+
+# Імпорт конфігу
+CONFIG_PATH = Path('/home/olekarp/config.py')
+spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
+config = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(config)
+
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from PIL import Image, ImageOps
-import pytesseract
 
-# --- ІМПОРТ КОНФІГУ (на рівень вище) ---
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-try:
-    import config
-
-    TOKEN = config.TG_TOKEN
-except (ImportError, AttributeError):
-    print("❌ Помилка: Перевірте config.py на рівень вище та наявність TG_TOKEN")
-    sys.exit(1)
-
-# --- НАЛАШТУВАННЯ ---
-BASE_DIR = Path(__file__).resolve().parent
-JSON_FILE = BASE_DIR / 'tickers.json'
-bot = Bot(token=TOKEN)
+bot = Bot(token=config.TG_TOKEN)
 dp = Dispatcher()
 thread_pool = ThreadPoolExecutor(max_workers=4)
+TICKERS_DB = Path(__file__).resolve().parent / 'tickers_db.json'
 
 
-def load_tickers():
-    if JSON_FILE.exists():
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            return sorted(json.load(f))
-    return ["BTC", "ETH", "SOL", "XRP", "ADA"]
+class TradeState(StatesGroup):
+    waiting_for_ticker = State()
+    waiting_for_leverage = State()
 
 
-# --- OCR ЛОГІКА (Синхронна частина) ---
+def load_db():
+    if TICKERS_DB.exists():
+        with open(TICKERS_DB, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_to_db(ocr_name, correct_name):
+    db = load_db()
+    db[ocr_name.upper()] = correct_name.upper()
+    with open(TICKERS_DB, 'w', encoding='utf-8') as f:
+        json.dump(db, f, indent=4)
+
+
+def get_best_ticker(ocr_name):
+    db = load_db()
+    name = ocr_name.upper()
+    if name in db: return db[name]
+    known = list(set(db.values())) + ["BTC", "ETH", "SOL", "1000RATS", "MERL"]
+    matches = difflib.get_close_matches(name, known, n=1, cutoff=0.5)
+    return matches[0] if matches else None
+
+
+# --- OCR ПАРСИНГ (Тільки монета, напрямок та вхід) ---
 def process_ocr(image_bytes):
+    from PIL import Image, ImageOps
+    import pytesseract
+
     img = Image.open(io.BytesIO(image_bytes))
     width, height = img.size
 
-    # Зона монети
-    coin_zone = img.crop((width * 0.02, height * 0.01, width // 1.5, height // 10))
-    coin_zone = ImageOps.invert(coin_zone.convert('L')).point(lambda x: 0 if x < 140 else 255, '1')
-    raw_coin = pytesseract.image_to_string(coin_zone, lang='eng', config='--psm 7').strip()
-    raw_coin = re.sub(r'[^A-Z0-9]', '', raw_coin.upper()).replace("USDT", "")
+    # Визначаємо Long/Short по кольору
+    direction_area = img.crop((width * 0.45, 5, width * 0.70, height * 0.12))
+    stat = direction_area.resize((1, 1)).getpixel((0, 0))
+    direction = "Short" if stat[0] > stat[1] else "Long"
 
-    # Напрямок
-    check_area = img.crop((width // 2, 0, width, height // 4))
-    r, g, b = ImageOps.posterize(check_area.resize((1, 1)), 1).getpixel((0, 0))
-    direction = "🔴 SHORT" if r > g else "🟢 LONG"
+    # Покращуємо для тексту
+    gray = ImageOps.grayscale(img.resize((width * 2, height * 2)))
+    enhanced = gray.point(lambda x: 0 if x < 160 else 255, '1')
+    raw_text = pytesseract.image_to_string(enhanced, lang='eng+rus', config='--psm 6')
+    clean_text = "".join(raw_text.split())
 
-    # Текст
-    full_text = pytesseract.image_to_string(img, lang='eng')
-    roi = re.search(r'([+-]?\d+[\.,]\d+\s*%)', full_text)
-    prices = re.findall(r'\d+[\.,]\d{4,}', full_text)
+    # Тікер
+    t_match = re.search(r'([A-Z0-9]{2,})USDT', clean_text, re.IGNORECASE)
+    raw_coin = t_match.group(1).upper() if t_match else "UNKNOWN"
 
-    return {
-        'raw_coin': raw_coin,
-        'direction': direction,
-        'roi': roi.group(1) if roi else "???",
-        'entry': prices[0] if len(prices) > 0 else "-",
-        'mark': prices[1] if len(prices) > 1 else "-"
-    }
+    # Ціна входу (шукаємо довге число)
+    prices = re.findall(r'\d+\.\d{4,}', clean_text)
+    entry = prices[0] if prices else "0"
+
+    return {'raw_coin': raw_coin, 'direction': direction, 'entry': entry}
 
 
-# --- ОБРОБНИКИ AIOGRAM ---
+# --- ОБРОБНИКИ ---
+
 @dp.message(F.photo)
-async def handle_photo(message: types.Message):
-    # Отримуємо фото
+async def handle_photo(message: types.Message, state: FSMContext):
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
     content = await bot.download_file(file.file_path)
 
-    # Запускаємо OCR в окремому потоці, щоб не фрізити бота
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(thread_pool, process_ocr, content.read())
+    # Виконуємо OCR
+    data = await asyncio.get_event_loop().run_in_executor(thread_pool, process_ocr, content.read())
 
-    tickers = load_tickers()
-    best_matches = difflib.get_close_matches(data['raw_coin'], tickers, n=1, cutoff=0.4)
-    suggestion = best_matches[0] if best_matches else None
+    # Шукаємо в базі виправлень
+    suggested = get_best_ticker(data['raw_coin'])
 
-    # Клавіатура
+    # Якщо в базі немає (suggested is None), використовуємо те, що розпарсило
+    final_suggestion = suggested if suggested else (data['raw_coin'] if data['raw_coin'] != "UNKNOWN" else None)
+
+    await state.update_data(ocr_data=data, raw_ocr=data['raw_coin'])
+
     builder = InlineKeyboardBuilder()
-    for t in tickers[:12]:  # Перші 12 для компактності
-        builder.button(text=t, callback_data=f"sel_{t}")
-    builder.button(text="➕ Додати нову", callback_data="add_new")
-    builder.adjust(3)
 
-    res_text = (
-        f"🔍 OCR розпізнав: `{data['raw_coin']}`\n"
-        f"{f'🤔 Можливо це: **{suggestion}**?' if suggestion else '❌ Не в базі'}\n\n"
-        f"📊 {data['direction']} | ROI: {data['roi']}\n"
+    if final_suggestion:
+        # Якщо назва виглядає правильно, даємо кнопку з цією назвою
+        builder.button(text=f"✅ {final_suggestion}", callback_data=f"confirm_{final_suggestion}")
+
+    builder.button(text="⌨️ Ввести вручну", callback_data="manual")
+    builder.adjust(1)
+
+    # Формуємо текст повідомлення
+    status_text = f"🔍 Розпізнано: **{data['raw_coin']}**"
+    if suggested:
+        status_text += f"\n💡 Знайдено в базі як: **{suggested}**"
+
+    await message.answer(
+        f"{status_text}\n"
+        f"📊 Напрямок: **{data['direction'].upper()}**\n"
         f"📥 Вхід: `{data['entry']}`\n\n"
-        f"Підтвердіть монету зі списку:"
+        f"Використовуємо тікер **{final_suggestion or '???'}**?",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
     )
+    await state.set_state(TradeState.waiting_for_ticker)
 
-    await message.answer(res_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-
-@dp.callback_query(F.data.startswith("sel_"))
-async def ticker_callback(callback: types.CallbackQuery):
-    ticker = callback.data.split("_")[1]
-    await callback.message.edit_text(f"✅ Готово! Монета **{ticker}** прийнята в роботу.", parse_mode="Markdown")
+@dp.callback_query(F.data == "manual")
+async def ask_manual(callback: types.CallbackQuery):
+    await callback.message.answer("Введіть тікер монети:")
     await callback.answer()
 
 
-async def main():
-    print("🚀 Бот запущений (aiogram 3.x)...")
-    await dp.start_polling(bot)
+@dp.callback_query(F.data.startswith("confirm_"))
+async def confirm_ticker(callback: types.CallbackQuery, state: FSMContext):
+    ticker = callback.data.split("_")[1].upper()
+    await show_leverage_grid(callback.message, ticker, state)
+    await callback.answer()
+
+
+@dp.message(TradeState.waiting_for_ticker)
+async def manual_ticker_input(message: types.Message, state: FSMContext):
+    ticker = message.text.upper().strip()
+    s_data = await state.get_data()
+    if s_data.get('raw_ocr') and s_data['raw_ocr'] != "UNKNOWN":
+        save_to_db(s_data['raw_ocr'], ticker)
+    await show_leverage_grid(message, ticker, state)
+
+
+async def show_leverage_grid(message, ticker, state: FSMContext):
+    await state.update_data(final_ticker=ticker)
+
+    # Створюємо сітку вибору плеча
+    builder = InlineKeyboardBuilder()
+    leverages = ["5", "10", "15", "20", "25"]
+    for lev in leverages:
+        builder.button(text=f"{lev}x", callback_data=f"lev_{lev}")
+
+    builder.adjust(3)  # Кнопки по 3 в ряд
+    await message.answer(f"Оберіть плече для **{ticker}**:", reply_markup=builder.as_markup())
+    await state.set_state(TradeState.waiting_for_leverage)
+
+
+# ... (попередній код залишається без змін)
+
+@dp.callback_query(F.data.startswith("lev_"), TradeState.waiting_for_leverage)
+async def ask_confirmation(callback: types.CallbackQuery, state: FSMContext):
+    lev = callback.data.split("_")[1]
+    data = await state.get_data()
+    ticker = data['final_ticker']
+    ocr = data['ocr_data']
+
+    # Зберігаємо обране плече
+    await state.update_data(final_leverage=lev)
+
+    # Готуємо кнопки підтвердження
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ ТАК, відправляй", callback_data="order_confirm")
+    builder.button(text="❌ НІ, скасувати", callback_data="order_cancel")
+    builder.adjust(2)
+
+    summary = (
+        f"📋 **ПЕРЕВІРКА ОРДЕРА**\n\n"
+        f"🔹 Монета: `{ticker}`\n"
+        f"🔹 Напрямок: **{ocr['direction'].upper()}**\n"
+        f"🔹 Плече: `{lev}x`\n"
+        f"🔹 Ціна входу: `{ocr['entry']}`\n\n"
+        f"🚀 **Відправляємо на Bybit?**"
+    )
+
+    await callback.message.edit_text(summary, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    await callback.answer()
+
+
+# Обробка натискання "ТАК"
+@dp.callback_query(F.data == "order_confirm")
+async def execute_order(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+
+    # ТУТ БУДЕ ЛОГІКА BYBIT
+    # Наприклад: await bybit_client.place_order(ticker=data['final_ticker'], ...)
+
+    await callback.message.edit_text(f"🚀 **Ордер для {data['final_ticker']} відправлено в роботу!**")
+    await state.clear()
+    await callback.answer()
+
+
+# Обробка скасування
+@dp.callback_query(F.data == "order_cancel")
+async def cancel_order(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("❌ Ордер скасовано. Чекаю на новий скріншот.")
+    await state.clear()
+    await callback.answer()
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(dp.start_polling(bot))
