@@ -1,5 +1,13 @@
+import importlib
+from pathlib import Path
+
 from pybit.unified_trading import HTTP
-import config
+
+# Імпорт конфігу
+CONFIG_PATH = Path('/home/olekarp/config.py')
+spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
+config = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(config)
 
 def place_bybit_order(ticker, side, leverage, entry_price):
     """
