@@ -1,8 +1,10 @@
 import importlib
 from pathlib import Path
-
+import json
+import time
+import hmac
+import hashlib
 import requests
-from pybit.unified_trading import HTTP
 
 # Імпорт конфігу
 CONFIG_PATH = Path('/home/olekarp/config.py')
@@ -10,12 +12,7 @@ spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
-import requests
-import json
-import time
-import hmac
-import hashlib
-import config
+
 
 
 def place_test_order():
