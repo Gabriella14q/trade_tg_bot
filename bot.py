@@ -98,10 +98,7 @@ async def debug_order_trigger(message: types.Message):
     await message.answer("🛠 Запускаю тестовий ордер на Demo через Cloudflare...")
 
     # Запускаємо в окремому потоці, щоб не фрізити бота
-    success, result = await asyncio.get_event_loop().run_in_executor(
-        thread_pool, place_test_order_async
-    )
-
+    success, result = await place_test_order_async()
     if success:
         order_id = result.get('result', {}).get('orderId', 'Н/Д')
         await message.answer(f"✅ УСПІХ!\nID Ордера: `{order_id}`\nПеревір Demo-акаунт.")
