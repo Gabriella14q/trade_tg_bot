@@ -12,36 +12,24 @@ spec.loader.exec_module(config)
 
 def place_test_order():
     try:
+        # Твій Cloudflare Worker тепер виступає як проксі-сервер
+        proxy_url = "https://bybit-proxy.itconsultaustria.workers.dev"
+
         session = HTTP(
-            demo=True,
+            demo=True,  # Тепер це працює "з коробки"
             api_key=config.API_KEY,
             api_secret=config.API_SECRET,
-            # Вказуємо ТІЛЬКИ базову частину домену.
-            # pybit сама додасть "api-demo." попереду.
-            # Разом вийде: api-demo.itconsultaustria.workers.dev
-            domain="itconsultaustria.workers.dev"
+            proxy=proxy_url  # Передаємо воркер як проксі
         )
 
-        symbol = "BTCUSDT"
-        qty = "0.001"
-
-        # Плече
-        session.set_leverage(
-            category="linear",
-            symbol=symbol,
-            buyLeverage="10",
-            sellLeverage="10",
-        )
-
-        # Ордер
+        # Решта коду без змін
         order = session.place_order(
             category="linear",
-            symbol=symbol,
+            symbol="BTCUSDT",
             side="Sell",
             orderType="Market",
-            qty=qty,
+            qty="0.001"
         )
         return True, order
-
     except Exception as e:
         return False, str(e)
