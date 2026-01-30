@@ -10,44 +10,34 @@ spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
-
 def place_test_order():
-    # Твоє повне посилання на воркер
-    CF_WORKER_URL = "https://bybit-proxy.itconsultaustria.workers.dev"
-
     try:
-        # Створюємо сесію БЕЗ параметра domain, але з явним endpoint
         session = HTTP(
             demo=True,
             api_key=config.API_KEY,
             api_secret=config.API_SECRET,
-            # Вказуємо endpoint прямо, це обходить автоматичне додавання "api."
-            endpoint=CF_WORKER_URL
+            # Вказуємо ТІЛЬКИ базову частину домену.
+            # pybit сама додасть "api-demo." попереду.
+            # Разом вийде: api-demo.itconsultaustria.workers.dev
+            domain="itconsultaustria.workers.dev"
         )
 
         symbol = "BTCUSDT"
-        side = "Sell"
-        leverage = "10"
         qty = "0.001"
 
-        print(f"--- Тест через endpoint: {CF_WORKER_URL} ---")
+        # Плече
+        session.set_leverage(
+            category="linear",
+            symbol=symbol,
+            buyLeverage="10",
+            sellLeverage="10",
+        )
 
-        # 1. Плече
-        try:
-            session.set_leverage(
-                category="linear",
-                symbol=symbol,
-                buyLeverage=leverage,
-                sellLeverage=leverage,
-            )
-        except Exception as e:
-            print(f"Leverage note: {e}")
-
-        # 2. Ордер
+        # Ордер
         order = session.place_order(
             category="linear",
             symbol=symbol,
-            side=side,
+            side="Sell",
             orderType="Market",
             qty=qty,
         )
