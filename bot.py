@@ -92,7 +92,7 @@ def process_ocr(image_bytes):
 # --- ОБРОБНИКИ ---
 
 
-@dp.message(F.text == "тест")  # Напиши боту слово "тест"
+@dp.message(F.text == "1")  # Напиши боту слово "тест"
 async def debug_order_trigger(message: types.Message):
     print("LOG: Команда 'тест' отримана в коді!")  # <--- Додай це
     await message.answer("🛠 Запускаю тестовий ордер на Demo через Cloudflare...")
