@@ -7,6 +7,7 @@ spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
+
 import aiohttp
 import hmac
 import hashlib
@@ -15,8 +16,12 @@ import json
 
 
 async def place_test_order_async():
-    url = "https://bybit-proxy.itconsultaustria.workers.dev/v5/order/create"
+    # ПРЯМИЙ URL (для платного акаунта PythonAnywhere)
+    # Demo: https://api-demo.bybit.com
+    # Mainnet: https://api.bybit.com
+    url = "https://api-demo.bybit.com/v5/order/create"
 
+    # Важливо: Ключі мають бути від DEMO аккаунта, якщо йдете на api-demo
     payload = {
         "category": "linear",
         "symbol": "BTCUSDT",
@@ -26,10 +31,13 @@ async def place_test_order_async():
         "timeInForce": "GTC"
     }
 
+    # Суворе форматування JSON (без пробілів) для підпису
+    payload_str = json.dumps(payload, separators=(',', ':'))
+
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
-    payload_str = json.dumps(payload)
 
+    # Розрахунок підпису за стандартом V5
     param_str = timestamp + config.API_KEY + recv_window + payload_str
     signature = hmac.new(
         config.API_SECRET.encode("utf-8"),
@@ -42,29 +50,23 @@ async def place_test_order_async():
         'X-BAPI-SIGN': signature,
         'X-BAPI-TIMESTAMP': timestamp,
         'X-BAPI-RECV-WINDOW': recv_window,
-        'Content-Type': 'application/json',
-        'Accept-Encoding': 'identity'  # Явно просимо не стискати
+        'Content-Type': 'application/json'
     }
 
-    # ВАЖЛИВО: auto_decompress=False вимикає спроби aiohttp розпакувати Brotli
-    async with aiohttp.ClientSession(auto_decompress=False, trust_env=True) as session:
+    # На платному тарифі trust_env не завадить, але проксі вже не лімітують
+    async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, headers=headers, data=payload_str, timeout=10) as resp:
-                # Читаємо як байтовий рядок
-                raw_body = await resp.read()
+                status = resp.status
+                # Читаємо як текст, щоб уникнути помилок декодування aiohttp
+                text = await resp.text()
 
-                # Декодуємо вручну в текст
-                try:
-                    text_res = raw_body.decode('utf-8')
-                    print(f"DEBUG: Status: {resp.status}")
-                    print(f"DEBUG: Raw Text: '{text_res}'")  # Якщо тут '', значить воркер не отримав відповіді
-                    data = json.loads(text_res)
-                    return True, data
-                except Exception as parse_err:
-                    # Якщо це все одно стиснутий бінарний мотлох
-                    print(f"Raw body start: {raw_body[:20]}")
-                    return False, f"Decode error: {parse_err}"
+                print(f"DEBUG: Status {status}")
+                print(f"DEBUG: Response: {text}")
 
+                if status == 200:
+                    return True, json.loads(text)
+                else:
+                    return False, f"Bybit Error {status}: {text}"
         except Exception as e:
-            print(f"Мережева помилка: {e}")
-            return False, str(e)
+            return False, f"Network Error: {str(e)}"
