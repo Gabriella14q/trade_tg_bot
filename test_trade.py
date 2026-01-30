@@ -10,26 +10,29 @@ spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
+
 def place_test_order():
-    # Твій чистий домен Cloudflare (БЕЗ https://)
-    CF_DOMAIN = "bybit-proxy.itconsultaustria.workers.dev"
+    # Твоє повне посилання на воркер
+    CF_WORKER_URL = "https://bybit-proxy.itconsultaustria.workers.dev"
 
     try:
+        # Створюємо сесію БЕЗ параметра domain, але з явним endpoint
         session = HTTP(
+            demo=True,
             api_key=config.API_KEY,
             api_secret=config.API_SECRET,
-            domain=CF_DOMAIN
+            # Вказуємо endpoint прямо, це обходить автоматичне додавання "api."
+            endpoint=CF_WORKER_URL
         )
 
-        # Захардкоджені параметри для тесту
         symbol = "BTCUSDT"
-        side = "Sell"  # Шорт
-        leverage = "10"  # Плече
-        qty = "0.001"  # Мінімальна кількість для BTC
+        side = "Sell"
+        leverage = "10"
+        qty = "0.001"
 
-        print(f"--- Спроба відкрити ордер: {symbol} {side} ---")
+        print(f"--- Тест через endpoint: {CF_WORKER_URL} ---")
 
-        # 1. Встановлюємо плече
+        # 1. Плече
         try:
             session.set_leverage(
                 category="linear",
@@ -37,18 +40,16 @@ def place_test_order():
                 buyLeverage=leverage,
                 sellLeverage=leverage,
             )
-            print("✅ Плече встановлено/перевірено")
         except Exception as e:
-            print(f"ℹ️ Плече (можливо, вже стоїть): {e}")
+            print(f"Leverage note: {e}")
 
-        # 2. Маркет ордер
+        # 2. Ордер
         order = session.place_order(
             category="linear",
             symbol=symbol,
             side=side,
             orderType="Market",
             qty=qty,
-            timeInForce="GTC",
         )
         return True, order
 
