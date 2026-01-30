@@ -3,10 +3,6 @@ from pathlib import Path
 
 from pybit.unified_trading import HTTP
 
-from pydantic import ConfigDict
-
-ConfigDict.protected_namespaces = ()
-
 # Імпорт конфігу
 CONFIG_PATH = Path('/home/olekarp/config.py')
 spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
@@ -21,7 +17,7 @@ def place_bybit_order(ticker, side, leverage, entry_price):
         session = HTTP(
             api_key=config.API_KEY,
             api_secret=config.API_SECRET,
-            domain='https://bybit-proxy.itconsultaustria.workers.dev/'  # Весь трафік іде через Cloudflare на api-demo.bybit.com
+            domain=config.CF_WORKER_URL  # Весь трафік іде через Cloudflare на api-demo.bybit.com
         )
 
         # Очищення тікера (якщо MERLU -> MERL)
