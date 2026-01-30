@@ -1,10 +1,5 @@
 import importlib
 from pathlib import Path
-import json
-import time
-import hmac
-import hashlib
-import requests
 
 # Імпорт конфігу
 CONFIG_PATH = Path('/home/olekarp/config.py')
@@ -12,11 +7,14 @@ spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
+import aiohttp
+import hmac
+import hashlib
+import time
+import json
 
 
-
-def place_test_order():
-    # Твоя адреса Cloudflare
+async def place_test_order_async():
     url = "https://bybit-proxy.itconsultaustria.workers.dev/v5/order/create"
 
     payload = {
@@ -28,12 +26,17 @@ def place_test_order():
         "timeInForce": "GTC"
     }
 
-    # Розрахунок підпису
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
     payload_str = json.dumps(payload)
+
+    # Підпис
     param_str = timestamp + config.API_KEY + recv_window + payload_str
-    signature = hmac.new(bytes(config.API_SECRET, "utf-8"), param_str.encode("utf-8"), hashlib.sha256).hexdigest()
+    signature = hmac.new(
+        config.API_SECRET.encode("utf-8"),
+        param_str.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
 
     headers = {
         'X-BAPI-API-KEY': config.API_KEY,
@@ -43,18 +46,18 @@ def place_test_order():
         'Content-Type': 'application/json'
     }
 
-    try:
-        # Створюємо сесію, яка ігнорує змінні оточення (проксі)
-        session = requests.Session()
-        session.trust_env = False
+    # Використовуємо aiohttp для швидкості
+    async with aiohttp.ClientSession(trust_env=True) as session:
+        try:
+            async with session.post(url, headers=headers, data=payload_str, timeout=10) as resp:
+                status = resp.status
+                text = await resp.text()
 
-        print("LOG: Відправляю запит на Cloudflare...")
-        response = session.post(url, headers=headers, data=payload_str, timeout=15)
-
-        print(f"LOG: Статус коду: {response.status_code}")
-        print(f"LOG: Текст відповіді: {response.text}")
-
-        return True, response.json()
-    except Exception as e:
-        print(f"LOG ERROR: {str(e)}")
-        return False, str(e)
+                if status == 200:
+                    return True, await resp.json()
+                else:
+                    print(f"Помилка Bybit: {status} - {text}")
+                    return False, text
+        except Exception as e:
+            print(f"Мережева помилка: {e}")
+            return False, str(e)
