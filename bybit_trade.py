@@ -3,6 +3,10 @@ from pathlib import Path
 
 from pybit.unified_trading import HTTP
 
+from pydantic import ConfigDict
+
+ConfigDict.protected_namespaces = ()
+
 # Імпорт конфігу
 CONFIG_PATH = Path('/home/olekarp/config.py')
 spec = importlib.util.spec_from_file_location("user_config", str(CONFIG_PATH))
