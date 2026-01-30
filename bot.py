@@ -7,7 +7,7 @@ import importlib.util
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from bybit_trade import place_bybit_order
-from test_trade import place_test_order
+from test_trade import place_test_order_async
 
 # Налаштування для aiogram 3
 from pydantic import ConfigDict
@@ -99,7 +99,7 @@ async def debug_order_trigger(message: types.Message):
 
     # Запускаємо в окремому потоці, щоб не фрізити бота
     success, result = await asyncio.get_event_loop().run_in_executor(
-        thread_pool, place_test_order
+        thread_pool, place_test_order_async
     )
 
     if success:
