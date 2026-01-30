@@ -10,35 +10,48 @@ config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
 def place_bybit_order(ticker, side, leverage, entry_price):
-    """
-    Функція для відкриття позиції на Futures (Unified Account)
-    """
+    # Твоє посилання, яке ти отримав у Cloudflare
+
     try:
+        # Створюємо сесію через проксі
         session = HTTP(
-            demo=True,
             api_key=config.API_KEY,
             api_secret=config.API_SECRET,
+            domain=config.CF_WORKER_URL  # Весь трафік іде через Cloudflare на api-demo.bybit.com
         )
 
-        # 1. Встановлюємо плече
-        session.set_leverage(
-            category="linear",
-            symbol=f"{ticker}USDT",
-            buyLeverage=str(leverage),
-            sellLeverage=str(leverage),
-        )
+        # Очищення тікера (якщо MERLU -> MERL)
+        clean_ticker = ticker.replace("USDT", "").strip()
+        if clean_ticker.endswith('U') and len(clean_ticker) > 4:
+            clean_ticker = clean_ticker[:-1]
 
-        # 2. Відкриваємо маркет-ордер (найшвидший вхід)
-        # Параметри qty (кількість) треба розрахувати залежно від твого депо
-        # Для прикладу ставимо мінімалку або через USDT
+        symbol = f"{clean_ticker}USDT"
+
+        # Встановлення плеча
+        try:
+            session.set_leverage(
+                category="linear",
+                symbol=symbol,
+                buyLeverage=str(leverage),
+                sellLeverage=str(leverage),
+            )
+        except Exception as e:
+            print(f"Плече вже встановлено або помилка: {e}")
+
+        # Розрахунок кількості (наприклад, на 10 USDT з урахуванням плеча)
+        # Формула: (Сума в USDT * Плече) / Ціна входу
+        qty = round((10 * int(leverage)) / float(entry_price), 1)
+
+        # Відправка маркет-ордера
         order = session.place_order(
             category="linear",
-            symbol=f"{ticker}USDT",
+            symbol=symbol,
             side=side,
             orderType="Market",
-            qty="1", # ТУТ ТРЕБА ВКАЗАТИ КІЛЬКІСТЬ В МОНЕТАХ
+            qty=str(qty),
             timeInForce="GTC",
         )
         return True, order
+
     except Exception as e:
         return False, str(e)
