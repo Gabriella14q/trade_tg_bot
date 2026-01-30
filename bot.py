@@ -6,6 +6,7 @@ import difflib
 import importlib.util
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from bybit_trade import place_bybit_order
 
 # Налаштування для aiogram 3
 from pydantic import ConfigDict
@@ -202,11 +203,27 @@ async def ask_confirmation(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "order_confirm")
 async def execute_order(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
+    ticker = data['final_ticker']
+    ocr = data['ocr_data']
+    lev = data['final_leverage']
 
-    # ТУТ БУДЕ ЛОГІКА BYBIT
-    # Наприклад: await bybit_client.place_order(ticker=data['final_ticker'], ...)
+    # Виклик логіки Bybit
+    # Перетворюємо Long/Short у формати Bybit: Buy/Sell
+    side = "Buy" if ocr['direction'].lower() == "long" else "Sell"
 
-    await callback.message.edit_text(f"🚀 **Ордер для {data['final_ticker']} відправлено в роботу!**")
+    success, result = await asyncio.get_event_loop().run_in_executor(
+        thread_pool,
+        place_bybit_order,
+        ticker, side, lev, ocr['entry']
+    )
+
+    if success:
+        await callback.message.edit_text(
+            f"✅ **Успіх!**\nОрдер для `{ticker}` ({lev}x) відкрит на Bybit.\nID: `{result['result']['orderId']}`"
+        )
+    else:
+        await callback.message.edit_text(f"❌ **Помилка Bybit:**\n`{result}`")
+
     await state.clear()
     await callback.answer()
 
